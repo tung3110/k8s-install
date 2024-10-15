@@ -1,0 +1,81 @@
+Cài đặt k8s
+
+
+Step 1: Cài đặt các package cần thiết và cài đặt Kubernetes (Thực hiện trên tất cả các server)
+
+
+KUBERNETES_VERSION=v1.31
+CRIO_VERSION=v1.31
+apt-get update
+apt-get install -y software-properties-common curl
+
+Add the Kubernetes repository
+
+curl -fsSL https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/Release.key |
+    gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/ /" |
+    tee /etc/apt/sources.list.d/kubernetes.list
+
+Add the CRI-O repository
+
+curl -fsSL https://pkgs.k8s.io/addons:/cri-o:/stable:/$CRIO_VERSION/deb/Release.key |
+    gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg
+
+echo "deb [signed-by=/etc/apt/keyrings/cri-o-apt-keyring.gpg] https://pkgs.k8s.io/addons:/cri-o:/stable:/$CRIO_VERSION/deb/ /" |
+    tee /etc/apt/sources.list.d/cri-o.list
+
+Install the packages
+
+apt-get update
+apt-get install -y cri-o kubelet kubeadm kubectl
+
+Start CRI-O
+
+systemctl start crio.service
+
+Bootstrap a cluster
+
+swapoff -a
+modprobe br_netfilter
+sysctl -w net.ipv4.ip_forward=1
+
+# unable to resolve host ecs-bbb: Name or service not known
+echo "alias sudo='sudo -h 127.0.0.1'" >> ~/.bash_aliases
+source ~/.bashrc
+sudo systemctl restart crio
+sudo systemctl enable crio
+sudo systemctl status crio
+sudo systemctl enable kubelet
+sudo kubeadm config images pull --cri-socket unix:///var/run/crio/crio.sock
+sudo sysctl -p
+
+Step 2: Khởi tạo K8s Cluster (chỉ thực hiện trên server Master)
+sudo kubeadm init --pod-network-cidr=192.168.1.0/24 --cri-socket unix:///var/run/crio/crio.sock
+sudo kubeadm init --pod-network-cidr=192.168.0.0/24 --cri-socket unix:///var/run/crio/crio.sock
+mkdir -p $HOME/.kube
+sudo cp -f /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.25.1/manifests/tigera-operator.yaml
+curl https://raw.githubusercontent.com/projectcalico/calico/v3.25.1/manifests/custom-resources.yaml -O
+sudo vi custom-resources.yaml
+
+apiVer:sion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  # Configures Calico networking.
+  calicoNetwork:
+    # Note: The ipPools section cannot be modified post-install.
+    ipPools:
+    - blockSize: 26
+      cidr: 192.168.0.0/16
+      encapsulation: VXLANCrossSubnet
+      natOutgoing: Enabled
+      nodeSelector: all()
+kubectl create -f custom-resources.yaml
+kubectl cluster-info
+Step 3: Join Node vào Master (Chỉ thực hiện trên các node nhé)
+sudo touch /proc/sys/net/bridge/bridge-nf-call-iptables
+sudo kubeadm join 42.96.40.173:6443 --token g65qts.m7dbucytuvhttqbp  --discovery-token-ca-cert-hash sha256:b43c16fa7467e1aed770058320c088c01e73ec67910ab5e7a22693fbab535125 --cri-socket /var/run/crio/crio.sock
